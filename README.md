@@ -39,7 +39,6 @@ python reset_odoo_password.py --db your_database_name
 ## Security Notes
 
 - Uses PBKDF2 SHA512 hashing (60,000 rounds)
-- Store sensitive data in `.env` file (add to `.gitignore`)
 - Ensure proper database access permissions
 
 ## Requirements
