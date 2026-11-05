@@ -1,61 +1,48 @@
-import os
-import sys
 import argparse
-import psycopg2
-from passlib.context import CryptContext
-from dotenv import load_dotenv
+import sys
+from server import execute_reset, DB_USER_16, DB_USER_17, DB_USER_18, DB_USER_19, DEFAULT_LOGIN, DEFAULT_NEW_PASSWORD, DEFAULT_USER_ID
 
-load_dotenv()
-
-parser = argparse.ArgumentParser(description="Reset odoo user password!")
-parser.add_argument("--db", required=True, help="Odoo database name")
-args = parser.parse_args()
-
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-USER_ID = os.getenv("USER_ID")
-NEW_PASSWORD = os.getenv("NEW_PASSWORD")
-
-required_vars = {
-    "DB_HOST": DB_HOST,
-    "DB_PORT": DB_PORT,
-    "DB_USER": DB_USER,
-    "DB_PASSWORD": DB_PASSWORD,
-    "USER_ID": USER_ID,
-    "NEW_PASSWORD": NEW_PASSWORD,
-}
-
-missing = [key for key, value in required_vars.items() if value is None]
-if missing:
-    print(f"Missing required environment variables: {', '.join(missing)}")
-    sys.exit(1)
-
-USER_ID = int(USER_ID)
-
-pwd_context = CryptContext(
-    schemes=["pbkdf2_sha512"],
-    default="pbkdf2_sha512",
-    pbkdf2_sha512__default_rounds=60000,
-)
-
-hashed_password = pwd_context.hash(NEW_PASSWORD)
-
-try:
-    conn = psycopg2.connect(
-        dbname=args.db,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT,
+def main():
+    parser = argparse.ArgumentParser(
+        description="Reset Odoo User Password across v16, v17, v18, and v19 without modifying .env"
     )
-    cur = conn.cursor()
-    cur.execute("UPDATE res_users SET password = %s WHERE id = %s", (hashed_password, USER_ID))
+    parser.add_argument("--db", required=True, help="Odoo database name")
+    parser.add_argument(
+        "--version",
+        default="auto",
+        choices=["auto", "16", "17", "18", "19"],
+        help=f"Odoo version: 16 ({DB_USER_16}), 17 ({DB_USER_17}), 18/19 ({DB_USER_18}), or auto",
+    )
+    parser.add_argument("--user", default=None, help="Explicit PostgreSQL DB user override")
+    parser.add_argument("--login", default=DEFAULT_LOGIN, help="Odoo login username (default: admin)")
+    parser.add_argument("--password", default=DEFAULT_NEW_PASSWORD, help="New password (default: admin)")
+    parser.add_argument("--uid", default=DEFAULT_USER_ID, type=int, help="Odoo user ID (default: 2)")
 
-    conn.commit()
-    cur.close()
-    conn.close()
-    print("Password reset successful!!")
-except Exception as e:
-    print(f"Error: {e}")
+    args = parser.parse_args()
+
+    print(f"[*] Resetting password for '{args.login}' on database '{args.db}' (Version: {args.version})...")
+    try:
+        res = execute_reset(
+            dbname=args.db,
+            version=args.version,
+            db_user=args.user,
+            login=args.login,
+            new_password=args.password,
+            user_id=args.uid,
+        )
+        if res.get("success"):
+            det = res.get("details", {})
+            print(f"[+] SUCCESS: {res.get('message')}")
+            print(f"    - Database: {det.get('database')}")
+            print(f"    - DB User: {det.get('db_user')}")
+            print(f"    - Version: {det.get('detected_version') or args.version}")
+            print(f"    - Login: {det.get('login')}")
+        else:
+            print(f"[-] ERROR: {res.get('error')}")
+            sys.exit(1)
+    except Exception as e:
+        print(f"[-] ERROR: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
