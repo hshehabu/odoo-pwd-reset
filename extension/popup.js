@@ -1,422 +1,267 @@
-/**
- * Odoo Password Reset Extension - popup.js
- * Works seamlessly across Odoo v16, v17, v18, and v19
- */
+// Odoo Reset Hub popup. Talks to the local Python helper through Chrome Native
+// Messaging; Chrome starts the helper itself, so nothing needs to be running.
 
-const VERSION_USER_MAP = {
-    'auto': 'auto-detect',
-    '16': 'openpg16',
-    '17': 'openpg17',
-    '18': 'openpg',
-    '19': 'openpg'
-};
+const HOST = 'com.odoo.reset_hub';
+const $ = (id) => document.getElementById(id);
 
-let currentVersion = 'auto';
-let databaseCatalog = {};
-let detectedTabInfo = null;
-let apiUrl = 'http://127.0.0.1:1111';
+let port = null;
+let nextId = 1;
+const pending = new Map();
+let tabInfo = null; // { tabId, origin, db }
 
-// DOM Elements
-const serverBadge = document.getElementById('serverBadge');
-const serverBadgeText = document.getElementById('serverBadgeText');
-const offlineNotice = document.getElementById('offlineNotice');
-const retryBtn = document.getElementById('retryBtn');
-
-const activeTabCard = document.getElementById('activeTabCard');
-const activeTabDb = document.getElementById('activeTabDb');
-const useDetectedDbBtn = document.getElementById('useDetectedDbBtn');
-
-const dbInput = document.getElementById('dbInput');
-const databasesList = document.getElementById('databasesList');
-const refreshDbsBtn = document.getElementById('refreshDbsBtn');
-const dbMetaInfo = document.getElementById('dbMetaInfo');
-const metaOwner = document.getElementById('metaOwner');
-const metaVersion = document.getElementById('metaVersion');
-
-const activeUserBadge = document.getElementById('activeUserBadge');
-const versionPills = document.querySelectorAll('.version-pill');
-
-const loginInput = document.getElementById('loginInput');
-const pwdInput = document.getElementById('pwdInput');
-const togglePwdBtn = document.getElementById('togglePwdBtn');
-const userIdInput = document.getElementById('userIdInput');
-const customDbUser = document.getElementById('customDbUser');
-const apiUrlInput = document.getElementById('apiUrlInput');
-
-const resetForm = document.getElementById('resetForm');
-const submitBtn = document.getElementById('submitBtn');
-const alertBox = document.getElementById('alertBox');
-const postActionBox = document.getElementById('postActionBox');
-const autofillBtn = document.getElementById('autofillBtn');
-
-// Initialize
-document.addEventListener('DOMContentLoaded', async () => {
-    // Load stored settings
-    try {
-        const stored = await chrome.storage.local.get(['apiUrl', 'lastVersion', 'lastLogin']);
-        if (stored.apiUrl) {
-            apiUrl = stored.apiUrl;
-            apiUrlInput.value = apiUrl;
+function connect() {
+    port = chrome.runtime.connectNative(HOST);
+    port.onMessage.addListener((msg) => {
+        const p = pending.get(msg.id);
+        if (p) { pending.delete(msg.id); p.resolve(msg); }
+    });
+    port.onDisconnect.addListener(() => {
+        const err = chrome.runtime.lastError?.message || 'Helper stopped';
+        port = null;
+        if (/not found|forbidden/i.test(err)) {
+            $('setupNotice').hidden = false;
         }
-        if (stored.lastVersion) {
-            setVersion(stored.lastVersion);
-        }
-        if (stored.lastLogin) {
-            loginInput.value = stored.lastLogin;
-        }
-    } catch (e) {
-        console.warn('Storage read fallback', e);
-    }
-
-    // Detect Active Tab Odoo
-    detectActiveTabOdoo();
-
-    // Check Backend Server & Load Databases
-    checkServerAndLoadDbs();
-
-    // Setup Event Listeners
-    setupEvents();
-});
-
-function setupEvents() {
-    // Retry server button
-    retryBtn.addEventListener('click', checkServerAndLoadDbs);
-
-    // Refresh databases button
-    refreshDbsBtn.addEventListener('click', () => {
-        refreshDbsBtn.style.transform = 'rotate(360deg)';
-        refreshDbsBtn.style.transition = 'transform 0.4s';
-        setTimeout(() => refreshDbsBtn.style.transform = 'none', 400);
-        loadDatabases();
+        setStatus('error', err);
+        pending.forEach((p) => p.resolve({ success: false, error: err }));
+        pending.clear();
     });
-
-    // Version pill selection
-    versionPills.forEach(pill => {
-        pill.addEventListener('click', () => {
-            const v = pill.getAttribute('data-version');
-            setVersion(v);
-        });
-    });
-
-    // Toggle password visibility
-    togglePwdBtn.addEventListener('click', () => {
-        if (pwdInput.type === 'password') {
-            pwdInput.type = 'text';
-            togglePwdBtn.textContent = '🔒';
-        } else {
-            pwdInput.type = 'password';
-            togglePwdBtn.textContent = '👁️';
-        }
-    });
-
-    // Preset password buttons
-    document.querySelectorAll('.preset-tag').forEach(tag => {
-        tag.addEventListener('click', () => {
-            pwdInput.value = tag.getAttribute('data-val');
-        });
-    });
-
-    // Database input changes
-    dbInput.addEventListener('input', () => {
-        updateDbMetaDisplay();
-    });
-
-    // Use detected database button
-    useDetectedDbBtn.addEventListener('click', () => {
-        if (detectedTabInfo && detectedTabInfo.db) {
-            dbInput.value = detectedTabInfo.db;
-            if (detectedTabInfo.version) {
-                const major = detectedTabInfo.version.split('.')[0];
-                if (['16', '17', '18', '19'].includes(major)) {
-                    setVersion(major);
-                }
-            }
-            updateDbMetaDisplay();
-        }
-    });
-
-    // API URL input changed
-    apiUrlInput.addEventListener('change', () => {
-        apiUrl = apiUrlInput.value.trim().replace(/\/+$/, '');
-        chrome.storage.local.set({ apiUrl });
-        checkServerAndLoadDbs();
-    });
-
-    // Form submit
-    resetForm.addEventListener('submit', handleResetPassword);
-
-    // Post-reset autofill button
-    autofillBtn.addEventListener('click', handleAutofillTab);
 }
 
-function setVersion(ver) {
-    currentVersion = ver;
-    versionPills.forEach(p => {
-        if (p.getAttribute('data-version') === ver) {
-            p.classList.add('active');
-        } else {
-            p.classList.remove('active');
-        }
-    });
-    updateUserBadge();
-    chrome.storage.local.set({ lastVersion: ver });
-}
-
-function updateUserBadge() {
-    const dbVal = dbInput.value.trim();
-    if (currentVersion === 'auto') {
-        if (databaseCatalog[dbVal]) {
-            const meta = databaseCatalog[dbVal];
-            activeUserBadge.textContent = `DB User: ${meta.owner}`;
-        } else {
-            activeUserBadge.textContent = 'DB User: auto-detect';
-        }
-    } else {
-        activeUserBadge.textContent = `DB User: ${VERSION_USER_MAP[currentVersion] || 'openpg'}`;
-    }
-}
-
-function updateDbMetaDisplay() {
-    const dbVal = dbInput.value.trim();
-    if (databaseCatalog[dbVal]) {
-        const meta = databaseCatalog[dbVal];
-        metaOwner.textContent = meta.owner;
-        metaVersion.textContent = meta.suggested_version;
-        dbMetaInfo.style.display = 'block';
-    } else {
-        dbMetaInfo.style.display = 'none';
-    }
-    updateUserBadge();
-}
-
-async function checkServerAndLoadDbs() {
-    setServerStatus('checking', 'Connecting...');
-    offlineNotice.style.display = 'none';
-
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000);
-
-        const res = await fetch(`${apiUrl}/api/status`, { signal: controller.signal });
-        clearTimeout(timeoutId);
-
-        if (res.ok) {
-            setServerStatus('online', 'Connected');
-            offlineNotice.style.display = 'none';
-            loadDatabases();
-        } else {
-            throw new Error(`Server returned status ${res.status}`);
-        }
-    } catch (err) {
-        setServerStatus('offline', 'Offline');
-        offlineNotice.style.display = 'flex';
-    }
-}
-
-function setServerStatus(state, label) {
-    serverBadge.className = `status-badge ${state}`;
-    serverBadgeText.textContent = label;
-}
-
-async function loadDatabases() {
-    try {
-        const res = await fetch(`${apiUrl}/api/databases`);
-        const data = await res.json();
-        if (data.success && Array.isArray(data.databases)) {
-            databaseCatalog = {};
-            databasesList.innerHTML = '';
-            data.databases.forEach(db => {
-                databaseCatalog[db.name] = db;
-                const opt = document.createElement('option');
-                opt.value = db.name;
-                opt.label = `${db.name} (${db.owner} - ${db.suggested_version})`;
-                databasesList.appendChild(opt);
-            });
-            updateDbMetaDisplay();
-        }
-    } catch (e) {
-        console.warn('Failed to load databases:', e);
-    }
-}
-
-// Active Tab Odoo Detection
-async function detectActiveTabOdoo() {
-    try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab || !tab.url || tab.url.startsWith('chrome://')) return;
-
-        // Try getting last_used_database cookie first
-        let cookieDb = null;
+function call(action, params = {}) {
+    if (!port) connect();
+    const id = nextId++;
+    return new Promise((resolve) => {
+        pending.set(id, { resolve });
         try {
-            const cookie = await chrome.cookies.get({ url: tab.url, name: 'last_used_database' });
-            if (cookie && cookie.value) {
-                cookieDb = cookie.value;
-            }
-        } catch (e) {}
+            port.postMessage({ id, action, ...params });
+        } catch (e) {
+            pending.delete(id);
+            resolve({ success: false, error: e.message });
+        }
+    });
+}
 
-        // Inspect page context for window.odoo session_info
-        let pageDb = null;
-        let pageVersion = null;
+function setStatus(state, title) {
+    $('status').className = `status ${state}`;
+    $('status').title = title;
+}
+
+function showMsg(type, title, body = '') {
+    const box = $('msg');
+    box.className = `notice ${type}`;
+    box.replaceChildren();
+    const t = document.createElement('strong');
+    t.textContent = title;
+    box.append(t, body);
+    box.hidden = false;
+}
+
+// ---------- active tab detection ----------
+
+async function detectTab() {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.url || !/^https?:/.test(tab.url)) return null;
+    const url = new URL(tab.url);
+
+    let db = url.searchParams.get('db');
+    if (!db) {
         try {
-            const results = await chrome.scripting.executeScript({
+            const [res] = await chrome.scripting.executeScript({
                 target: { tabId: tab.id },
                 world: 'MAIN',
                 func: () => {
-                    try {
-                        const odoo = window.odoo;
-                        const session = odoo?.session_info || window.session_info;
-                        return {
-                            db: session?.db || (document.cookie.match(/last_used_database=([^;]+)/)?.[1]),
-                            version: session?.server_version || null,
-                            isOdoo: !!(window.odoo || document.querySelector('link[href*="web/content"]') || document.title.includes('Odoo'))
-                        };
-                    } catch (e) {
-                        return null;
-                    }
-                }
+                    const o = window.odoo || {};
+                    const s = o.__session_info__ || o.session_info || window.session_info || {};
+                    return s.db || o.info?.db || null;
+                },
             });
+            db = res?.result || null;
+        } catch (e) { /* not scriptable */ }
+    }
+    if (!db) {
+        try {
+            const c = await chrome.cookies.get({ url: tab.url, name: 'last_used_database' });
+            db = c?.value || null;
+        } catch (e) { /* ignore */ }
+    }
+    return { tabId: tab.id, origin: url.origin, db };
+}
 
-            if (results && results[0] && results[0].result) {
-                const res = results[0].result;
-                if (res.db) pageDb = res.db;
-                if (res.version) pageVersion = res.version;
-            }
-        } catch (e) {}
+// ---------- database list & meta ----------
 
-        const finalDb = pageDb || cookieDb;
-        if (finalDb) {
-            detectedTabInfo = {
-                tabId: tab.id,
-                db: finalDb,
-                version: pageVersion
-            };
-            activeTabDb.textContent = `${finalDb} ${pageVersion ? '(' + pageVersion + ')' : ''}`;
-            activeTabCard.style.display = 'flex';
+let catalog = {};
 
-            // Auto-fill dbInput if currently empty
-            if (!dbInput.value) {
-                dbInput.value = finalDb;
-                if (pageVersion) {
-                    const major = pageVersion.split('.')[0];
-                    if (['16', '17', '18', '19'].includes(major)) {
-                        setVersion(major);
-                    }
-                }
-                updateDbMetaDisplay();
-            }
-        }
-    } catch (err) {
-        console.warn('Tab detection error:', err);
+async function loadDatabases() {
+    const res = await call('databases');
+    if (!res.success) {
+        setStatus('error', res.error);
+        if ($('setupNotice').hidden) showMsg('error', 'Could not load databases', res.error);
+        return;
+    }
+    setStatus('ok', 'Helper ready');
+    catalog = {};
+    for (const d of res.databases) catalog[d.name] = d;
+    updateMeta();
+    if (!$('dbList').hidden) renderDropdown();
+}
+
+// ---------- database dropdown ----------
+
+let activeIdx = -1;
+
+function matches() {
+    const q = $('db').value.trim().toLowerCase();
+    const all = Object.values(catalog);
+    if (!q || catalog[$('db').value.trim()]) return all; // exact pick: show everything
+    return all.filter((d) => d.name.toLowerCase().includes(q));
+}
+
+function renderDropdown() {
+    const list = $('dbList');
+    const items = matches();
+    list.replaceChildren();
+    activeIdx = -1;
+    if (!items.length) {
+        const li = document.createElement('li');
+        li.className = 'empty';
+        li.textContent = Object.keys(catalog).length ? 'No matching database' : 'Loading…';
+        list.append(li);
+    }
+    items.forEach((d, i) => {
+        const li = document.createElement('li');
+        li.role = 'option';
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = d.name;
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = `${d.owner} · ${d.suggested_version}`;
+        li.append(name, tag);
+        li.addEventListener('mousedown', (e) => { e.preventDefault(); pick(d.name); });
+        li.addEventListener('mousemove', () => setActive(i));
+        if (d.name === $('db').value.trim()) activeIdx = i;
+        list.append(li);
+    });
+    setActive(activeIdx);
+}
+
+function openDropdown() {
+    $('dbList').hidden = false;
+    $('db').setAttribute('aria-expanded', 'true');
+    renderDropdown();
+}
+
+function closeDropdown() {
+    $('dbList').hidden = true;
+    $('db').setAttribute('aria-expanded', 'false');
+}
+
+function setActive(i) {
+    const lis = $('dbList').querySelectorAll('li[role="option"]');
+    lis.forEach((li, j) => li.classList.toggle('active', j === i));
+    activeIdx = i;
+    if (lis[i]) lis[i].scrollIntoView({ block: 'nearest' });
+}
+
+function pick(name) {
+    $('db').value = name;
+    closeDropdown();
+    updateMeta();
+}
+
+function onDbKey(e) {
+    const open = !$('dbList').hidden;
+    const count = $('dbList').querySelectorAll('li[role="option"]').length;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!open) return openDropdown();
+        if (!count) return;
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        setActive((activeIdx + step + count) % count);
+    } else if (e.key === 'Enter' && open && activeIdx >= 0) {
+        e.preventDefault();
+        pick(matches()[activeIdx].name);
+    } else if (e.key === 'Escape' && open) {
+        e.preventDefault();
+        closeDropdown();
     }
 }
 
-// Reset Password Handler
-async function handleResetPassword(e) {
+function updateMeta() {
+    const name = $('db').value.trim();
+    const d = catalog[name];
+    let text = '';
+    if (d) text = `Owner ${d.owner} · v${d.suggested_version}`;
+    else if (name && Object.keys(catalog).length) text = 'Not found in PostgreSQL';
+    if (tabInfo?.db && tabInfo.db === name) text = `From current tab · ${text}`.replace(/ · $/, '');
+    $('dbMeta').textContent = text;
+}
+
+// ---------- reset ----------
+
+async function onSubmit(e) {
     e.preventDefault();
+    const db = $('db').value.trim();
+    const login = $('login').value.trim();
+    const password = $('password').value;
+    if (!db) return;
 
-    const dbname = dbInput.value.trim();
-    const login = loginInput.value.trim();
-    const new_password = pwdInput.value;
-    const user_id = userIdInput.value ? parseInt(userIdInput.value) : 2;
-    const customUser = customDbUser.value.trim() || undefined;
+    const btn = $('submit');
+    btn.disabled = true;
+    btn.textContent = 'Resetting…';
+    $('msg').hidden = true;
 
-    if (!dbname) {
-        showAlert('Please enter or select a database name.', 'error');
+    const res = await call('reset', {
+        dbname: db,
+        login,
+        new_password: password,
+        version: $('version').value,
+        user_id: parseInt($('userId').value, 10) || 2,
+        db_user: $('dbUser').value.trim(),
+    });
+
+    btn.disabled = false;
+    btn.textContent = 'Reset password';
+
+    if (!res.success) {
+        showMsg('error', 'Reset failed', res.error || 'Unknown error');
         return;
     }
 
-    submitBtn.disabled = true;
-    submitBtn.innerHTML = '<span class="btn-text">Resetting...</span>';
-    showAlert('Connecting to database and hashing password with PBKDF2-SHA512...', 'info');
-    postActionBox.style.display = 'none';
+    chrome.storage.local.set({ login, password, autoLogin: $('autoLogin').checked });
 
-    try {
-        const res = await fetch(`${apiUrl}/api/reset`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                dbname,
-                version: currentVersion,
-                db_user: customUser,
-                login,
-                new_password,
-                user_id
-            })
-        });
+    const det = res.details || {};
+    const ver = det.detected_version ? ` · v${det.detected_version}` : '';
+    showMsg('ok', 'Password reset', `${login} / ${password} on ${db} (pg user ${det.db_user}${ver})`);
 
-        const data = await res.json();
-        if (data.success) {
-            const det = data.details || {};
-            showAlert(`
-                <strong>🎉 Password Reset Successful!</strong><br>
-                <span>DB: <strong>${det.database}</strong> | User: <strong>${det.db_user}</strong></span><br>
-                <span>Login: <strong>${det.login}</strong> | Password: <strong>${new_password}</strong></span>
-            `, 'success');
-
-            // Save last used login
-            chrome.storage.local.set({ lastLogin: login });
-
-            // Show Auto-Fill button if on an active tab
-            postActionBox.style.display = 'block';
-        } else {
-            showAlert(`<strong>Failed:</strong> ${data.error || 'Unknown error occurred'}`, 'error');
-        }
-    } catch (err) {
-        showAlert(`<strong>Error:</strong> Cannot reach local server at ${apiUrl}. Please make sure <code>start_background.vbs</code> or <code>start_server.bat</code> is running.`, 'error');
-    } finally {
-        submitBtn.disabled = false;
-        submitBtn.innerHTML = '<span class="btn-text">Reset Password</span>';
+    if ($('autoLogin').checked && tabInfo && tabInfo.db === db) {
+        chrome.runtime.sendMessage({ type: 'login', tabId: tabInfo.tabId, origin: tabInfo.origin, db, login, password });
+        setTimeout(() => window.close(), 400);
     }
 }
 
-// Auto-fill credentials in the active tab
-async function handleAutofillTab() {
-    try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab || !tab.id) return;
+// ---------- init ----------
 
-        const login = loginInput.value.trim();
-        const pwd = pwdInput.value;
+document.addEventListener('DOMContentLoaded', async () => {
+    $('form').addEventListener('submit', onSubmit);
+    const db = $('db');
+    db.addEventListener('input', () => { updateMeta(); openDropdown(); });
+    db.addEventListener('click', openDropdown);
+    db.addEventListener('blur', closeDropdown);
+    db.addEventListener('keydown', onDbKey);
 
-        await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: (loginVal, pwdVal) => {
-                // Find login field
-                const loginEl = document.querySelector('input[name="login"], #login, input[autocomplete="username"]');
-                const pwdEl = document.querySelector('input[name="password"], #password, input[type="password"]');
+    const stored = await chrome.storage.local.get(['login', 'password', 'autoLogin']);
+    if (stored.login) $('login').value = stored.login;
+    if (stored.password) $('password').value = stored.password;
+    if (stored.autoLogin === false) $('autoLogin').checked = false;
 
-                if (loginEl) {
-                    loginEl.value = loginVal;
-                    loginEl.dispatchEvent(new Event('input', { bubbles: true }));
-                    loginEl.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-                if (pwdEl) {
-                    pwdEl.value = pwdVal;
-                    pwdEl.dispatchEvent(new Event('input', { bubbles: true }));
-                    pwdEl.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-
-                // If on login form, click submit
-                const submitBtn = document.querySelector('button[type="submit"], .oe_login_buttons button');
-                if (submitBtn) {
-                    submitBtn.click();
-                } else {
-                    window.location.reload();
-                }
-            },
-            args: [login, pwd]
-        });
-
-        window.close(); // Close extension popup
-    } catch (e) {
-        console.warn('Autofill error:', e);
-        showAlert('Could not auto-fill tab (must be on an Odoo login page).', 'info');
+    // Run both in parallel: the helper starts while we inspect the tab.
+    const dbsPromise = loadDatabases();
+    tabInfo = await detectTab();
+    if (tabInfo?.db && !$('db').value) {
+        $('db').value = tabInfo.db;
+        updateMeta();
     }
-}
-
-function showAlert(html, type) {
-    alertBox.innerHTML = html;
-    alertBox.className = `alert-box ${type}`;
-    alertBox.style.display = 'block';
-}
-
+    $('autoLogin').closest('label').hidden = !tabInfo?.db;
+    await dbsPromise;
+});

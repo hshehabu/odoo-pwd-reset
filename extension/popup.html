@@ -2,164 +2,73 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Odoo Password Reset</title>
+    <title>Odoo Reset Hub</title>
     <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-    <div class="popup-container">
-        <!-- Header -->
-        <header class="header">
-            <div class="brand">
-                <div class="icon-wrap">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-                    </svg>
+    <header>
+        <h1>Odoo Reset Hub</h1>
+        <span id="status" class="status checking" title="Helper status"></span>
+    </header>
+
+    <div id="setupNotice" class="notice error" hidden>
+        <strong>One-time setup needed</strong>
+        Double-click <code>install.bat</code> in the project folder, then reopen this popup.
+    </div>
+
+    <form id="form" autocomplete="off">
+        <label for="db">Database</label>
+        <div class="combo">
+            <input id="db" placeholder="Type or pick a database" required spellcheck="false"
+                   role="combobox" aria-expanded="false" aria-controls="dbList">
+            <span class="caret" aria-hidden="true"></span>
+            <ul id="dbList" class="dropdown" role="listbox" hidden></ul>
+        </div>
+        <div id="dbMeta" class="meta"></div>
+
+        <div class="row">
+            <div>
+                <label for="login">Login</label>
+                <input id="login" value="admin" required spellcheck="false">
+            </div>
+            <div>
+                <label for="password">New password</label>
+                <input id="password" value="admin" required spellcheck="false">
+            </div>
+        </div>
+
+        <label class="check">
+            <input type="checkbox" id="autoLogin" checked>
+            <span>Log in on the current tab after reset</span>
+        </label>
+
+        <details>
+            <summary>Advanced</summary>
+            <div class="row">
+                <div>
+                    <label for="version">Odoo version</label>
+                    <select id="version">
+                        <option value="auto">Auto-detect</option>
+                        <option value="16">16 (openpg16)</option>
+                        <option value="17">17 (openpg17)</option>
+                        <option value="18">18 (openpg)</option>
+                        <option value="19">19 (openpg)</option>
+                    </select>
                 </div>
                 <div>
-                    <h1 class="title">Odoo Reset Hub</h1>
-                    <span class="subtitle">v16 • v17 • v18 • v19</span>
+                    <label for="userId">Odoo user ID</label>
+                    <input id="userId" type="number" value="2" min="1">
                 </div>
             </div>
-            <div id="serverBadge" class="status-badge checking" title="Local server status">
-                <span class="status-dot"></span>
-                <span id="serverBadgeText">Connecting...</span>
-            </div>
-        </header>
+            <label for="dbUser">PostgreSQL user override</label>
+            <input id="dbUser" placeholder="leave empty for auto" spellcheck="false">
+        </details>
 
-        <!-- Offline Server Notice -->
-        <div id="offlineNotice" class="offline-notice" style="display: none;">
-            <div class="offline-content">
-                <strong>⚠️ Local Service Offline</strong>
-                <p>Run <code>start_background.vbs</code> or <code>start_server.bat</code> in the project folder.</p>
-            </div>
-            <button id="retryBtn" class="btn-retry" type="button">Retry</button>
-        </div>
+        <button id="submit" type="submit">Reset password</button>
+    </form>
 
-        <!-- Detected Active Tab Card -->
-        <div id="activeTabCard" class="active-tab-card" style="display: none;">
-            <div class="active-tab-info">
-                <span class="tab-label">🎯 Active Tab Odoo</span>
-                <span id="activeTabDb" class="tab-db">database</span>
-            </div>
-            <button id="useDetectedDbBtn" class="btn-use-tab" type="button">Use This</button>
-        </div>
-
-        <form id="resetForm">
-            <!-- Database Name Selection -->
-            <div class="field-group">
-                <div class="field-header">
-                    <label for="dbInput">Target Database</label>
-                    <button id="refreshDbsBtn" class="btn-icon" type="button" title="Refresh databases from PostgreSQL">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                            <polyline points="23 4 23 10 17 10"></polyline>
-                            <polyline points="1 20 1 14 7 14"></polyline>
-                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-                        </svg>
-                    </button>
-                </div>
-                <div class="input-with-select">
-                    <input list="databasesList" id="dbInput" name="dbname" placeholder="Select or type database..." required autocomplete="off">
-                    <datalist id="databasesList"></datalist>
-                </div>
-                <div id="dbMetaInfo" class="meta-tag" style="display: none;">
-                    Owner: <strong id="metaOwner">openpg</strong> | Suggested: <strong id="metaVersion">auto</strong>
-                </div>
-            </div>
-
-            <!-- Odoo Version Selector -->
-            <div class="field-group">
-                <div class="field-header">
-                    <label>Odoo Version</label>
-                    <span id="activeUserBadge" class="user-badge">DB User: auto</span>
-                </div>
-                <div class="version-grid">
-                    <button type="button" class="version-pill active" data-version="auto">
-                        <span class="pill-title">⚡ Auto</span>
-                        <span class="pill-desc">Smart</span>
-                    </button>
-                    <button type="button" class="version-pill" data-version="16">
-                        <span class="pill-title">v16</span>
-                        <span class="pill-desc">openpg16</span>
-                    </button>
-                    <button type="button" class="version-pill" data-version="17">
-                        <span class="pill-title">v17</span>
-                        <span class="pill-desc">openpg17</span>
-                    </button>
-                    <button type="button" class="version-pill" data-version="18">
-                        <span class="pill-title">v18</span>
-                        <span class="pill-desc">openpg</span>
-                    </button>
-                    <button type="button" class="version-pill" data-version="19">
-                        <span class="pill-title">v19</span>
-                        <span class="pill-desc">openpg</span>
-                    </button>
-                </div>
-            </div>
-
-            <!-- Credentials -->
-            <div class="two-cols">
-                <div class="field-group">
-                    <label for="loginInput">Login</label>
-                    <input type="text" id="loginInput" value="admin" required>
-                </div>
-                <div class="field-group">
-                    <label for="pwdInput">New Password</label>
-                    <div class="password-wrapper">
-                        <input type="password" id="pwdInput" value="admin" required>
-                        <button type="button" id="togglePwdBtn" class="btn-toggle-pwd" title="Show/Hide Password">
-                            👁️
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Quick Password Presets -->
-            <div class="preset-row">
-                <span class="preset-label">Quick:</span>
-                <button type="button" class="preset-tag" data-val="admin">admin</button>
-                <button type="button" class="preset-tag" data-val="123456">123456</button>
-                <button type="button" class="preset-tag" data-val="admin123">admin123</button>
-            </div>
-
-            <!-- Advanced Accordion -->
-            <details class="advanced-details">
-                <summary>⚙️ Advanced DB & Connection Options</summary>
-                <div class="advanced-body">
-                    <div class="field-group">
-                        <label for="userIdInput">Odoo User ID</label>
-                        <input type="number" id="userIdInput" value="2">
-                    </div>
-                    <div class="field-group">
-                        <label for="customDbUser">Custom DB User</label>
-                        <input type="text" id="customDbUser" placeholder="e.g. postgres, openpg16">
-                    </div>
-                    <div class="field-group full-width">
-                        <label for="apiUrlInput">API Backend URL</label>
-                        <input type="text" id="apiUrlInput" value="http://127.0.0.1:1111">
-                    </div>
-                </div>
-            </details>
-
-            <!-- Submit Button -->
-            <button type="submit" id="submitBtn" class="btn-primary">
-                <span class="btn-text">Reset Password</span>
-            </button>
-        </form>
-
-        <!-- Notification Banner -->
-        <div id="alertBox" class="alert-box" style="display: none;"></div>
-
-        <!-- Post-Reset Actions -->
-        <div id="postActionBox" class="post-action-box" style="display: none;">
-            <button id="autofillBtn" class="btn-secondary" type="button">
-                🚀 Auto-Fill & Reload Active Tab
-            </button>
-        </div>
-    </div>
+    <div id="msg" class="notice" hidden></div>
 
     <script src="popup.js"></script>
 </body>
 </html>
-

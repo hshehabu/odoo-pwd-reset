@@ -1,6 +1,6 @@
 import argparse
 import sys
-from server import execute_reset, DB_USER_16, DB_USER_17, DB_USER_18, DB_USER_19, DEFAULT_LOGIN, DEFAULT_NEW_PASSWORD, DEFAULT_USER_ID
+from core import execute_reset, DB_USER_16, DB_USER_17, DB_USER_18, DB_USER_19, DEFAULT_LOGIN, DEFAULT_NEW_PASSWORD, DEFAULT_USER_ID
 
 def main():
     parser = argparse.ArgumentParser(
